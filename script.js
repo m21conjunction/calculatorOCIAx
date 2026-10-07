@@ -47,8 +47,29 @@ function customCandidates(series, targetCpu, targetMemory) {
 function intelGenerationWarning(shapeKey, machine) {
   if (shapeKey !== 'x12ax') return '';
   if (machine.series === 'n4') return 'OCI X12 uses Intel Xeon 6 6987P-C (Granite Rapids); Google Cloud N4 uses Intel Xeon Platinum 8581C (Emerald Rapids). The CPU generations differ even when vCPU and memory match exactly.';
-  if (machine.series === 'c4' && ![144, 288].includes(machine.vcpu)) return 'OCI X12 uses Intel Xeon 6 6987P-C (Granite Rapids). This C4 size can use Intel Xeon Platinum 8581C (Emerald Rapids) or Intel Xeon Platinum 6985P-C (Granite Rapids); check the zone and CPU platform before treating it as a same-generation match.';
   return '';
+}
+
+// Google publishes zones where Granite Rapids can be requested as the minimum
+// CPU platform for all C4 sizes. Automatic still uses the zone's default CPU.
+const C4_GRANITE_MIN_CPU_ZONES = {
+  'europe-north1': ['europe-north1-b', 'europe-north1-c'],
+  'europe-west4': ['europe-west4-ai1a'],
+  'europe-west8': ['europe-west8-c'],
+};
+
+function c4PlatformGuidance(machine, regionId, shapeKey) {
+  if (machine.series !== 'c4') return '';
+  if ([144, 288].includes(machine.vcpu)) {
+    return 'Granite Rapids guaranteed for this C4 size: Intel Xeon Platinum 6985P-C.';
+  }
+  const region = REGIONS[regionId];
+  const zones = C4_GRANITE_MIN_CPU_ZONES[regionId];
+  const x12Context = shapeKey === 'x12ax' ? ' OCI X12 uses Intel Xeon 6 6987P-C (Granite Rapids), so a same-generation match requires Granite Rapids on C4.' : '';
+  const platformChoice = zones ?
+    `To guarantee Granite Rapids, choose ${zones.join(' or ')} and set minimum CPU platform to Intel Granite Rapids.${regionId === 'europe-west4' ? ' The listed zone is De Kooy AI zone; confirm C4 availability there.' : ''}` :
+    `Google does not list a zone in ${region.label} where Granite Rapids can be requested as the minimum CPU platform for this C4 size.`;
+  return `Region alone cannot identify this C4 processor. With Automatic, it can use Intel Xeon Platinum 8581C (Emerald Rapids) or Intel Xeon Platinum 6985P-C (Granite Rapids). ${platformChoice} Check the deployed VM with lscpu.${x12Context}`;
 }
 
 function estimateGcp(machine, region, totalBlock, egressCost = 0) {
@@ -257,10 +278,11 @@ function render() {
     const label = exact ? '<span class="badge">EXACT CAPACITY</span>' : index === 0 ? '<span class="badge">CLOSEST FIT</span>' : '';
     const { computeCost, diskCost, totalCost, priceKnown } = estimateGcp(machine, region, totalBlock, gcpEgressHour);
     const generationWarning = intelGenerationWarning(state.shape, machine);
+    const c4Guidance = c4PlatformGuidance(machine, regionSelect.value, state.shape);
     const priceDetail = priceKnown ?
       `VM ${money(computeCost)} / hour + block ${money(diskCost)} / hour + internet egress ${monthlyMoney(gcpEgressMonth)} / month · ${money(totalCost - ociTotal)} / hour and ${monthlyMoney((totalCost - ociTotal) * PRICES.hoursPerMonth)} / month vs OCI` :
       `Custom VM price: check Google Cloud. Block + internet egress estimate ${monthlyMoney((diskCost + gcpEgressHour) * PRICES.hoursPerMonth)} / month.`;
-    return `<article class="match"><div class="match-main"><div class="match-top"><h4>${machine.name}</h4>${label}${machine.kind === 'custom' ? '<span class="badge badge-custom">CUSTOM</span>' : ''}</div><div class="match-meta"><span>${machine.cpu}</span><span>${machine.vcpu} vCPUs</span><span>${machine.memory.toLocaleString()} GB RAM</span></div><div class="match-extra">${exact ? 'Exact vCPU and memory capacity' : `+${extraCpu} vCPUs · +${extraMemory.toLocaleString()} GB vs. target`}${machine.extended ? ' · Extended memory' : ''}</div>${generationWarning ? `<div class="generation-warning" role="note"><strong>CPU generation warning</strong><span>${generationWarning}</span></div>` : ''}<div class="match-price"><div class="price-period"><span>PER HOUR</span><strong>${priceKnown ? money(totalCost) : 'Quote required'}</strong></div><div class="price-period"><span>PER MONTH · 730 HOURS</span><strong>${priceKnown ? monthlyMoney(totalCost * PRICES.hoursPerMonth) : 'Quote required'}</strong></div><small>${priceDetail}</small></div></div><div class="match-score" title="Google Cloud machine class">${machine.kind === 'custom' ? 'FLEX' : machine.className === 'highcpu' ? 'CPU' : machine.className === 'highmem' ? 'MEM' : 'STD'}</div></article>`;
+    return `<article class="match"><div class="match-main"><div class="match-top"><h4>${machine.name}</h4>${label}${machine.kind === 'custom' ? '<span class="badge badge-custom">CUSTOM</span>' : ''}</div><div class="match-meta"><span>${machine.cpu}</span><span>${machine.vcpu} vCPUs</span><span>${machine.memory.toLocaleString()} GB RAM</span></div><div class="match-extra">${exact ? 'Exact vCPU and memory capacity' : `+${extraCpu} vCPUs · +${extraMemory.toLocaleString()} GB vs. target`}${machine.extended ? ' · Extended memory' : ''}</div>${generationWarning ? `<div class="generation-warning" role="note"><strong>CPU generation warning</strong><span>${generationWarning}</span></div>` : ''}${c4Guidance ? `<div class="generation-warning" role="note"><strong>${[144, 288].includes(machine.vcpu) ? 'C4 CPU platform · Guaranteed' : 'C4 CPU platform · Depends on zone'}</strong><span>${c4Guidance}</span><a href="https://docs.cloud.google.com/compute/docs/cpu-platforms" target="_blank" rel="noopener noreferrer">Google CPU platform documentation ↗</a></div>` : ''}<div class="match-price"><div class="price-period"><span>PER HOUR</span><strong>${priceKnown ? money(totalCost) : 'Quote required'}</strong></div><div class="price-period"><span>PER MONTH · 730 HOURS</span><strong>${priceKnown ? monthlyMoney(totalCost * PRICES.hoursPerMonth) : 'Quote required'}</strong></div><small>${priceDetail}</small></div></div><div class="match-score" title="Google Cloud machine class">${machine.kind === 'custom' ? 'FLEX' : machine.className === 'highcpu' ? 'CPU' : machine.className === 'highmem' ? 'MEM' : 'STD'}</div></article>`;
   }).join('')}</section>`).join('');
 }
 
