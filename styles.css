@@ -64,16 +64,21 @@ legend, .field > span:first-child, .region-field > span { display: block; margin
 .suffix { color: var(--muted); font-size: 14px; white-space: nowrap; }
 .field small { display: block; min-height: 20px; margin-top: 7px; color: var(--muted); font-size: 12px; line-height: 1.4; }
 .boot-field { margin-top: 24px; }
-.derived { display: flex; align-items: center; justify-content: space-between; margin-top: 27px; padding: 20px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
-.derived-label { display: block; margin-bottom: 6px; color: var(--muted); font-size: 14px; }
-.derived strong { font-size: 26px; }
-.derived strong span { color: var(--muted); font-size: 16px; font-weight: 400; }
-.derived-icon { font-size: 23px; font-weight: 700; color: var(--oracle-red); }
+.egress-block { margin-top: 28px; padding-top: 22px; border-top: 1px solid var(--border); }
+.egress-block h3 { margin: 0 0 18px; font: 700 21px/1.2 Georgia, 'Times New Roman', serif; }
+.egress-select { display: block; margin-top: 18px; }
+.egress-select span { display: block; margin-bottom: 8px; font-size: 14px; font-weight: 600; }
+.egress-select select { width: 100%; min-height: 44px; padding: 9px 10px; border: 1px solid #aaa29d; background: white; color: var(--charcoal); }
+.egress-select select:focus-visible { outline: 2px solid var(--oracle-red); outline-offset: 2px; }
+.egress-select small { display: block; margin-top: 7px; color: var(--muted); font-size: 12px; line-height: 1.4; }
+.egress-field { margin-top: 18px; }
+.egress-field > span:first-child { font-size: 14px; }
+.egress-field .input-wrap { height: 50px; }
+.egress-field .input-wrap input { font-size: 21px; }
 .method-note { margin: 19px 0 0; color: var(--muted); font-size: 14px; line-height: 1.55; }
 .oci-summary { display: flex; flex-direction: column; gap: 6px; padding-bottom: 20px; border-bottom: 1px solid var(--border); }
 .oci-summary strong { font-size: 17px; overflow-wrap: anywhere; }
 .oci-summary span { color: var(--muted); font-size: 13px; line-height: 1.4; }
-.oci .derived { margin-top: 0; border-top: 0; }
 .oci-price { margin-top: 24px; padding: 20px; background: var(--charcoal); color: white; border-left: 5px solid var(--oracle-gold); }
 .oci-price .price-row { display: flex; flex-direction: column; gap: 5px; padding: 2px 0 14px; }
 .oci-price .price-row + .price-row { padding: 14px 0; border-top: 1px solid #716b67; }

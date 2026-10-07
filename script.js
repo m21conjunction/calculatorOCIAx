@@ -51,7 +51,7 @@ function intelGenerationWarning(shapeKey, machine) {
   return '';
 }
 
-function estimateGcp(machine, region, totalBlock) {
+function estimateGcp(machine, region, totalBlock, egressCost = 0) {
   const regionFactor = region[machine.series === 'n4d' ? 'c4d' : machine.series === 'n4' ? 'c4' : machine.series];
   const rate = PRICES.gcp[machine.series];
   const standardMemory = Math.min(machine.memory, machine.vcpu * 8);
@@ -60,12 +60,12 @@ function estimateGcp(machine, region, totalBlock) {
     (machine.vcpu * rate.vcpu + standardMemory * rate.memory + extraMemoryCost) * regionFactor :
     machine.vcpu * rate[machine.className] * regionFactor;
   const diskCost = totalBlock * region.disk / PRICES.hoursPerMonth;
-  return { computeCost, diskCost, totalCost: computeCost + diskCost, priceKnown: !machine.extended || rate.extendedMemory !== undefined };
+  return { computeCost, diskCost, egressCost, totalCost: computeCost + diskCost + egressCost, priceKnown: !machine.extended || rate.extendedMemory !== undefined };
 }
 
-function ociSavingsRow(label, machine, region, totalBlock, ociTotal, unavailableText) {
+function ociSavingsRow(label, machine, region, totalBlock, ociTotal, unavailableText, gcpEgressHourly = 0) {
   if (!machine) return `<div class="oci-saving"><span>${label}</span><strong>${unavailableText}</strong></div>`;
-  const { totalCost, priceKnown } = estimateGcp(machine, region, totalBlock);
+  const { totalCost, priceKnown } = estimateGcp(machine, region, totalBlock, gcpEgressHourly);
   if (!priceKnown) return `<div class="oci-saving"><span>${label} · ${machine.name}</span><strong>GCP quote required</strong></div>`;
   const percent = (totalCost - ociTotal) / totalCost * 100;
   const value = Math.abs(percent) < 0.05 ? 'About the same price' :
@@ -98,6 +98,33 @@ const REGIONS = {
   'africa-south1': { label: 'Johannesburg', series: ['c4', 'c4d', 'n4'], c4d: 2.1938 / 1.9924, c4: 2.2963 / 2.0854, disk: 0.088 },
 };
 const PRESETS = { small: { ocpus: 2, memory: 12, boot: 50 }, medium: { ocpus: 8, memory: 48, boot: 100 }, large: { ocpus: 32, memory: 192, boot: 200 } };
+// User-facing workload averages from the supplied ranges, in decimal GB/month.
+const EGRESS_PROFILES = { low: 30, typical: 150, moderate: 625, web: 3000, heavy: 27500 };
+// Illustrative Google Cloud Premium Tier rates by internet destination, USD/GiB.
+const GCP_EGRESS_TIERS = {
+  europe: [[1, 0], [1024, 0.12], [10240, 0.11], [Infinity, 0.085]],
+  mea: [[1, 0], [1024, 0.15], [10240, 0.13], [Infinity, 0.11]],
+  saudi: [[1024, 0.19], [10240, 0.18], [Infinity, 0.15]],
+};
+const GB_TO_GIB = 1e9 / (1024 ** 3);
+
+function ociEgressMonthly(gb, freeGb, regionId) {
+  const rate = regionId.startsWith('europe-') ? 0.0085 : 0.05;
+  return Math.max(0, gb - freeGb) * rate;
+}
+
+function gcpEgressMonthly(gb, destination) {
+  const usageGiB = gb * GB_TO_GIB;
+  let prior = 0;
+  let cost = 0;
+  for (const [limit, rate] of GCP_EGRESS_TIERS[destination]) {
+    cost += Math.max(0, Math.min(usageGiB, limit) - prior) * rate;
+    prior = limit;
+    if (usageGiB <= limit) break;
+  }
+  return cost;
+}
+
 const money = value => (value < 0 ? '-$' : '$') + Math.abs(value).toFixed(3);
 const monthlyMoney = value => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(value);
 const state = { shape: 'e6ax' };
@@ -108,6 +135,10 @@ const extraBlockInput = document.querySelector('#extra-block');
 const familySelect = document.querySelector('#cpu-family');
 const matchTypeSelect = document.querySelector('#match-type');
 const regionSelect = document.querySelector('#region');
+const egressProfileSelect = document.querySelector('#egress-profile');
+const egressInput = document.querySelector('#egress-gb');
+const egressDestinationSelect = document.querySelector('#egress-destination');
+const ociFreeEgressInput = document.querySelector('#oci-free-gb');
 const matchList = document.querySelector('#match-list');
 const validation = document.querySelector('#validation');
 
@@ -136,7 +167,15 @@ document.querySelectorAll('[data-preset]').forEach(button => button.addEventList
   extraBlockInput.value = 0;
   render();
 }));
-[ocpusInput, memoryInput, bootInput, extraBlockInput, familySelect, matchTypeSelect, regionSelect].forEach(input => input.addEventListener('input', render));
+egressProfileSelect.addEventListener('input', () => {
+  if (EGRESS_PROFILES[egressProfileSelect.value] !== undefined) egressInput.value = EGRESS_PROFILES[egressProfileSelect.value];
+  render();
+});
+egressInput.addEventListener('input', () => {
+  egressProfileSelect.value = 'custom';
+  render();
+});
+[ocpusInput, memoryInput, bootInput, extraBlockInput, familySelect, matchTypeSelect, regionSelect, egressDestinationSelect, ociFreeEgressInput].forEach(input => input.addEventListener('input', render));
 
 function render() {
   const shape = SHAPES[state.shape];
@@ -147,21 +186,30 @@ function render() {
   const boot = Number(bootInput.value);
   const extraBlock = Number(extraBlockInput.value);
   const totalBlock = boot + extraBlock;
+  const egressGb = Number(egressInput.value);
+  const ociFreeGb = Number(ociFreeEgressInput.value);
+  document.querySelector('#egress-bandwidth').textContent = `About ${Number.isFinite(egressGb) ? (egressGb * 8000 / (PRICES.hoursPerMonth * 3600)).toFixed(2) : '—'} Mbps sustained over 730 hours`;
   document.querySelector('#oci-size-summary').textContent = `${ocpus} OCPUs · ${memory} GB RAM · ${totalBlock} GB block`;
   const maxMemory = Math.min(shape.maxMemory, ocpus * 64);
   document.querySelector('#memory-help').textContent = `Up to ${Number.isFinite(maxMemory) ? maxMemory : shape.maxMemory} GB at this OCPU count · default 6 GB per OCPU`;
-  document.querySelector('#equivalent-vcpus').innerHTML = `${Number.isFinite(ocpus) ? ocpus * 2 : '—'} <span>vCPUs</span>`;
   const issues = [];
   if (!Number.isInteger(ocpus) || ocpus < 1 || ocpus > shape.maxOcpus) issues.push(`Enter 1–${shape.maxOcpus} whole OCPUs.`);
   if (!Number.isInteger(memory) || memory < Math.max(1, ocpus) || memory > maxMemory) issues.push(`Enter ${Math.max(1, ocpus)}–${maxMemory} whole GB of memory.`);
   if (!Number.isInteger(boot) || boot < 50 || boot > 32768) issues.push('Enter 50–32,768 whole GB for the boot volume.');
   if (!Number.isInteger(extraBlock) || (extraBlock !== 0 && extraBlock < 50) || extraBlock > 32768) issues.push('Enter 0 or 50–32,768 whole GB for the extra volume.');
+  if (!Number.isInteger(egressGb) || egressGb < 0 || egressGb > 1000000) issues.push('Enter 0–1,000,000 whole GB of monthly internet egress.');
+  if (!Number.isInteger(ociFreeGb) || ociFreeGb < 0 || ociFreeGb > 10000) issues.push('Enter 0–10,000 whole GB of remaining OCI free egress.');
+  if (!GCP_EGRESS_TIERS[egressDestinationSelect.value]) issues.push('Choose an internet destination.');
   validation.hidden = issues.length === 0;
   validation.textContent = issues.join(' ');
   if (issues.length) { document.querySelector('#custom-note').hidden = true; matchList.replaceChildren(); document.querySelector('#oci-price').replaceChildren(); document.querySelector('#result-summary').textContent = 'Check the OCI configuration'; return; }
   const ociCompute = ocpus * PRICES.oci[state.shape].ocpu + memory * PRICES.oci[state.shape].memory;
   const ociDisk = totalBlock * PRICES.oci.balancedDiskPerGbMonth / PRICES.hoursPerMonth;
-  const ociTotal = ociCompute + ociDisk;
+  const ociEgressMonth = ociEgressMonthly(egressGb, ociFreeGb, regionSelect.value);
+  const ociEgressHour = ociEgressMonth / PRICES.hoursPerMonth;
+  const gcpEgressMonth = gcpEgressMonthly(egressGb, egressDestinationSelect.value);
+  const gcpEgressHour = gcpEgressMonth / PRICES.hoursPerMonth;
+  const ociTotal = ociCompute + ociDisk + ociEgressHour;
   const targetCpu = ocpus * 2;
   const filter = familySelect.value === 'same' ? shape.vendor : familySelect.value;
   const region = REGIONS[regionSelect.value];
@@ -190,15 +238,15 @@ function render() {
   const savings = [];
   if (showCustom) {
     const exactCustom = custom.filter(machine => machine.vcpu === targetCpu && machine.memory === memory);
-    const pricedExact = exactCustom.filter(machine => estimateGcp(machine, region, totalBlock).priceKnown)
-      .sort((a, b) => estimateGcp(a, region, totalBlock).totalCost - estimateGcp(b, region, totalBlock).totalCost)[0];
-    savings.push(ociSavingsRow('vs GCP custom exact capacity', pricedExact ?? exactCustom[0], region, totalBlock, ociTotal, 'Exact match unavailable'));
+    const pricedExact = exactCustom.filter(machine => estimateGcp(machine, region, totalBlock, gcpEgressHour).priceKnown)
+      .sort((a, b) => estimateGcp(a, region, totalBlock, gcpEgressHour).totalCost - estimateGcp(b, region, totalBlock, gcpEgressHour).totalCost)[0];
+    savings.push(ociSavingsRow('vs GCP custom exact capacity', pricedExact ?? exactCustom[0], region, totalBlock, ociTotal, 'Exact match unavailable', gcpEgressHour));
   }
   if (matchTypeSelect.value !== 'custom') {
     const closestStandard = groups.find(group => group.kind === 'predefined')?.matches[0];
-    savings.push(ociSavingsRow('vs GCP standard closest fit', closestStandard, region, totalBlock, ociTotal, 'Closest fit unavailable'));
+    savings.push(ociSavingsRow('vs GCP standard closest fit', closestStandard, region, totalBlock, ociTotal, 'Closest fit unavailable', gcpEgressHour));
   }
-  document.querySelector('#oci-price').innerHTML = `<div class="price-row"><span>ESTIMATED TOTAL / HOUR</span><strong>${money(ociTotal)}</strong></div><div class="price-row"><span>ESTIMATED TOTAL / MONTH · 730 HOURS</span><strong>${monthlyMoney(ociTotal * PRICES.hoursPerMonth)}</strong><div class="oci-savings">${savings.join('')}</div></div><div class="price-breakdown"><div><span>Compute</span><span>${money(ociCompute)} / hour</span></div><div><span>Boot + block · ${totalBlock} GB</span><span>${money(ociDisk)} / hour</span></div></div>`;
+  document.querySelector('#oci-price').innerHTML = `<div class="price-row"><span>ESTIMATED TOTAL / HOUR</span><strong>${money(ociTotal)}</strong></div><div class="price-row"><span>ESTIMATED TOTAL / MONTH · 730 HOURS</span><strong>${monthlyMoney(ociTotal * PRICES.hoursPerMonth)}</strong><div class="oci-savings">${savings.join('')}</div></div><div class="price-breakdown"><div><span>Compute</span><span>${money(ociCompute)} / hour</span></div><div><span>Boot + block · ${totalBlock} GB</span><span>${money(ociDisk)} / hour</span></div><div><span>Internet egress · ${egressGb.toLocaleString()} GB/month</span><span>${monthlyMoney(ociEgressMonth)} / month</span></div></div>`;
 
   document.querySelector('#result-summary').textContent = `${matchCount ? `${matchCount} options` : 'No matches'} for ${targetCpu} vCPUs · ${memory} GB · ${region.label}`;
   if (!matchCount) { matchList.innerHTML = '<div class="empty">No available machine type in this selection meets both requirements. Try another CPU family, match type, region, or a smaller OCI size.</div>'; return; }
@@ -207,11 +255,11 @@ function render() {
     const extraMemory = machine.memory - memory;
     const exact = extraCpu === 0 && extraMemory === 0;
     const label = exact ? '<span class="badge">EXACT CAPACITY</span>' : index === 0 ? '<span class="badge">CLOSEST FIT</span>' : '';
-    const { computeCost, diskCost, totalCost, priceKnown } = estimateGcp(machine, region, totalBlock);
+    const { computeCost, diskCost, totalCost, priceKnown } = estimateGcp(machine, region, totalBlock, gcpEgressHour);
     const generationWarning = intelGenerationWarning(state.shape, machine);
     const priceDetail = priceKnown ?
-      `VM ${money(computeCost)} / hour + ${totalBlock} GB block ${money(diskCost)} / hour · ${money(totalCost - ociTotal)} / hour and ${monthlyMoney((totalCost - ociTotal) * PRICES.hoursPerMonth)} / month vs OCI` :
-      `Custom VM price: check Google Cloud. Block-only estimate ${money(diskCost)} / hour · ${monthlyMoney(diskCost * PRICES.hoursPerMonth)} / month.`;
+      `VM ${money(computeCost)} / hour + block ${money(diskCost)} / hour + internet egress ${monthlyMoney(gcpEgressMonth)} / month · ${money(totalCost - ociTotal)} / hour and ${monthlyMoney((totalCost - ociTotal) * PRICES.hoursPerMonth)} / month vs OCI` :
+      `Custom VM price: check Google Cloud. Block + internet egress estimate ${monthlyMoney((diskCost + gcpEgressHour) * PRICES.hoursPerMonth)} / month.`;
     return `<article class="match"><div class="match-main"><div class="match-top"><h4>${machine.name}</h4>${label}${machine.kind === 'custom' ? '<span class="badge badge-custom">CUSTOM</span>' : ''}</div><div class="match-meta"><span>${machine.cpu}</span><span>${machine.vcpu} vCPUs</span><span>${machine.memory.toLocaleString()} GB RAM</span></div><div class="match-extra">${exact ? 'Exact vCPU and memory capacity' : `+${extraCpu} vCPUs · +${extraMemory.toLocaleString()} GB vs. target`}${machine.extended ? ' · Extended memory' : ''}</div>${generationWarning ? `<div class="generation-warning" role="note"><strong>CPU generation warning</strong><span>${generationWarning}</span></div>` : ''}<div class="match-price"><div class="price-period"><span>PER HOUR</span><strong>${priceKnown ? money(totalCost) : 'Quote required'}</strong></div><div class="price-period"><span>PER MONTH · 730 HOURS</span><strong>${priceKnown ? monthlyMoney(totalCost * PRICES.hoursPerMonth) : 'Quote required'}</strong></div><small>${priceDetail}</small></div></div><div class="match-score" title="Google Cloud machine class">${machine.kind === 'custom' ? 'FLEX' : machine.className === 'highcpu' ? 'CPU' : machine.className === 'highmem' ? 'MEM' : 'STD'}</div></article>`;
   }).join('')}</section>`).join('');
 }

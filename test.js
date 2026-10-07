@@ -13,9 +13,10 @@ function makeNode(value = '') {
 const nodes = {};
 for (const [id, value] of Object.entries({
   ocpus: '16', memory: '96', boot: '100', 'extra-block': '0',
+  'egress-profile': 'typical', 'egress-gb': '150', 'egress-destination': 'europe', 'oci-free-gb': '10000',
   'cpu-family': 'same', 'match-type': 'all', region: 'europe-west3',
 })) nodes[`#${id}`] = makeNode(value);
-for (const id of ['match-list', 'validation', 'source-cpu', 'memory-help', 'equivalent-vcpus', 'oci-price', 'result-summary', 'ocpu-help', 'custom-note', 'oci-shape-name', 'oci-size-summary']) {
+for (const id of ['match-list', 'validation', 'source-cpu', 'memory-help', 'oci-price', 'result-summary', 'ocpu-help', 'custom-note', 'oci-shape-name', 'oci-size-summary', 'egress-bandwidth']) {
   nodes[`#${id}`] = makeNode();
 }
 const shapes = ['e6ax', 'x12ax'].map(shape => Object.assign(makeNode(), { dataset: { shape } }));
@@ -38,13 +39,25 @@ assert.match(nodes['#oci-price'].innerHTML, /ESTIMATED TOTAL \/ HOUR/);
 assert.match(nodes['#oci-price'].innerHTML, /ESTIMATED TOTAL \/ MONTH · 730 HOURS/);
 assert.match(nodes['#oci-price'].innerHTML, /\$922\.30/);
 assert.match(nodes['#oci-price'].innerHTML, /vs GCP custom exact capacity · n4d-custom-32-98304/);
-assert.match(nodes['#oci-price'].innerHTML, /11\.0% savings/);
+assert.match(nodes['#oci-price'].innerHTML, /12\.4% savings/);
 assert.match(nodes['#oci-price'].innerHTML, /vs GCP standard closest fit · c4d-standard-32/);
-assert.match(nodes['#oci-price'].innerHTML, /29\.7% savings/);
+assert.match(nodes['#oci-price'].innerHTML, /30\.6% savings/);
 assert.match(results(), /Custom shapes/);
 assert.match(results(), /Standard shapes/);
 assert.match(results(), /PER MONTH · 730 HOURS/);
-assert.match(results(), /\$1,036\.62/);
+assert.match(results(), /\$1,053\.26/);
+assert.match(results(), /internet egress \$16\.64 \/ month/);
+assert.match(nodes['#egress-bandwidth'].textContent, /0\.46 Mbps/);
+assert.equal(vm.runInContext("ociEgressMonthly(12000, 10000, 'europe-west3')", context), 17);
+assert.equal(vm.runInContext("ociEgressMonthly(12000, 10000, 'me-central2')", context), 100);
+assert.equal(vm.runInContext("gcpEgressMonthly(1.073741824, 'europe')", context), 0);
+assert.equal(Number(vm.runInContext("gcpEgressMonthly(150, 'europe')", context).toFixed(2)), 16.64);
+assert.ok(vm.runInContext("gcpEgressMonthly(150, 'saudi')", context) > vm.runInContext("gcpEgressMonthly(150, 'mea')", context));
+const tenTiBInGb = 10240 / vm.runInContext('GB_TO_GIB', context);
+const tenTiBCost = vm.runInContext(`gcpEgressMonthly(${tenTiBInGb}, 'europe')`, context);
+assert.ok(Math.abs(tenTiBCost - (1023 * 0.12 + 9216 * 0.11)) < 1e-6);
+const twentyTiBCost = vm.runInContext(`gcpEgressMonthly(${tenTiBInGb * 2}, 'europe')`, context);
+assert.ok(Math.abs(twentyTiBCost - (tenTiBCost + 10240 * 0.085)) < 1e-6);
 assert.match(nodes['#memory-help'].textContent, /default 6 GB per OCPU/);
 for (const preset of presets) {
   preset.listeners.click();
@@ -143,4 +156,25 @@ assert.doesNotMatch(nodes['#oci-price'].innerHTML, /vs GCP custom exact capacity
 const higherCost = vm.runInContext("ociSavingsRow('test', { series: 'c4d', className: 'standard', kind: 'predefined', vcpu: 32, memory: 124, name: 'test' }, REGIONS['europe-west3'], 100, 10, 'none')", context);
 assert.match(higherCost, /% higher/);
 assert.doesNotMatch(higherCost, /% savings/);
-console.log('Custom sizing, monthly savings, CPU generation warnings, pricing, filters, and regions passed.');
+nodes['#egress-profile'].value = 'heavy';
+nodes['#egress-profile'].listeners.input();
+assert.equal(nodes['#egress-gb'].value, 27500);
+assert.match(nodes['#oci-price'].innerHTML, /Internet egress · 27,500 GB\/month<\/span><span>\$148\.75 \/ month/);
+nodes['#egress-profile'].value = 'web';
+nodes['#egress-profile'].listeners.input();
+assert.equal(nodes['#egress-gb'].value, 3000);
+nodes['#egress-gb'].value = '400';
+nodes['#egress-gb'].listeners.input();
+assert.equal(nodes['#egress-profile'].value, 'custom');
+nodes['#egress-gb'].value = '12000';
+nodes['#oci-free-gb'].value = '10000';
+render();
+assert.match(nodes['#oci-price'].innerHTML, /Internet egress · 12,000 GB\/month<\/span><span>\$17\.00 \/ month/);
+nodes['#oci-free-gb'].value = '0';
+render();
+assert.match(nodes['#oci-price'].innerHTML, /Internet egress · 12,000 GB\/month<\/span><span>\$102\.00 \/ month/);
+nodes['#egress-gb'].value = '-1';
+render();
+assert.match(nodes['#validation'].textContent, /monthly internet egress/);
+assert.equal(nodes['#oci-price'].innerHTML, '');
+console.log('Custom sizing, internet egress, monthly savings, CPU generation warnings, pricing, filters, and regions passed.');
